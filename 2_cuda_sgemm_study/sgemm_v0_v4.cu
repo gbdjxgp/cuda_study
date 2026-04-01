@@ -180,6 +180,52 @@ __global__ void sgemm_v4_using_float4(float *A, float *B, float *C, int M, int N
         block_start_c[threadIdx.y * N + threadIdx.x * NUM_PER_THREAD + i] = temp[i];
     }
 }
+template <unsigned int M_NUM_PER_BLOCK, unsigned int N_NUM_PER_BLOCK, unsigned int K_NUM_PER_BLOCK, unsigned int NUM_PER_THREAD>
+__global__ void sgemm_v5_register_outer_product(float *A, float *B, float *C, int M, int N, int K)
+{
+    float *block_start_a = A + blockIdx.y * M_NUM_PER_BLOCK * K;
+    float *block_start_b = B + blockIdx.x * N_NUM_PER_BLOCK;
+    int idx = threadIdx.y * blockDim.x + threadIdx.x;
+    int idx_x = idx % 16;
+    int idx_y = idx / 16;
+    __shared__ float a_shared[M_NUM_PER_BLOCK][K_NUM_PER_BLOCK];
+    __shared__ float b_shared[K_NUM_PER_BLOCK][N_NUM_PER_BLOCK];
+    float temp[2][2] = {0.f};
+
+    for (int s = 0; s < K; s += K_NUM_PER_BLOCK)
+    {
+        FETCH_FLOAT4(a_shared[threadIdx.y][threadIdx.x * NUM_PER_THREAD]) = FETCH_FLOAT4(block_start_a[threadIdx.y * K + threadIdx.x * NUM_PER_THREAD + s]);
+        FETCH_FLOAT4(b_shared[threadIdx.y][threadIdx.x * NUM_PER_THREAD]) = FETCH_FLOAT4(block_start_b[(threadIdx.y + s) * N + threadIdx.x * NUM_PER_THREAD]);
+        __syncthreads();
+        for (int k = 0; k < K_NUM_PER_BLOCK; k++)
+        {
+            float reg_a[2];
+            float reg_b[2];
+            reg_a[0] = a_shared[idx_y * 2][k];
+            reg_a[1] = a_shared[idx_y * 2 + 1][k];
+            reg_b[0] = b_shared[k][idx_x * 2];
+            reg_b[1] = b_shared[k][idx_x * 2 + 1];
+            for (int i = 0; i < 2; i++)
+            {
+                for (int j = 0; j < 2; j++)
+                {
+                    temp[i][j] += reg_a[i] * reg_b[j];
+                }
+            }
+        }
+        __syncthreads();
+    }
+
+    float *block_start_c = C + blockIdx.y * M_NUM_PER_BLOCK * N + blockIdx.x * N_NUM_PER_BLOCK;
+    for (int i = 0; i < 2; i++)
+    {
+        for (int j = 0; j < 2; j++)
+        {
+            block_start_c[(idx_y * 2 + i) * N + idx_x * 2 + j] = temp[i][j];
+        }
+    }
+}
+
 int main()
 {
     int m = 128;
@@ -220,8 +266,8 @@ int main()
     constexpr int K_NUM_PER_BLOCK = 32;
     constexpr int NUM_PER_THREAD = 4;
     dim3 block_v4(8, 32);
-    dim3 grid_v4(m / M_NUM_PER_BLOCK, n / N_NUM_PER_BLOCK);
-    sgemm_v4_using_float4<M_NUM_PER_BLOCK, N_NUM_PER_BLOCK, K_NUM_PER_BLOCK, NUM_PER_THREAD><<<grid_v4, block_v4>>>(matrix_A_device, matrix_B_device, matrix_C_device, m, n, k);
+    dim3 grid_v4(n / N_NUM_PER_BLOCK, m / M_NUM_PER_BLOCK);
+    sgemm_v5_register_outer_product<M_NUM_PER_BLOCK, N_NUM_PER_BLOCK, K_NUM_PER_BLOCK, NUM_PER_THREAD><<<grid_v4, block_v4>>>(matrix_A_device, matrix_B_device, matrix_C_device, m, n, k);
     cudaMemcpy(matrix_C_host_gpu_calc, matrix_C_device, mem_size_C, cudaMemcpyDeviceToHost);
     if (all_close(matrix_C_host_gpu_calc, matrix_C_host_cpu_calc, m, n))
     {
