@@ -2,9 +2,32 @@
 #include "iostream"
 #include "random"
 
-__global__ void add1(float *d_input_x, float *d_input_y, float *d_output)
+void __global__ add1(float *d_input_x, float *d_input_y, float *d_output)
 {
     int idx = blockDim.x * blockIdx.x + threadIdx.x;
+    d_output[idx] = d_input_x[idx] + d_input_y[idx];
+}
+void __global__ add2(float *d_input_x, float *d_input_y, float *d_output)
+{
+    int idx = blockDim.x * blockIdx.x + threadIdx.x + 1;
+    d_output[idx] = d_input_x[idx] + d_input_y[idx];
+}
+void __global__ add3(float *d_input_x, float *d_input_y, float *d_output)
+{
+    int tid_permuted = threadIdx.x ^ 0x1;
+    int idx = blockDim.x * blockIdx.x + tid_permuted;
+    d_output[idx] = d_input_x[idx] + d_input_y[idx];
+}
+void __global__ add4(float *d_input_x, float *d_input_y, float *d_output)
+{
+    int idx = blockDim.x * blockIdx.x + threadIdx.x + 1;
+    int warp_idx = idx / 32;
+
+    d_output[warp_idx] = d_input_x[warp_idx] + d_input_y[warp_idx];
+}
+void __global__ add5(float *d_input_x, float *d_input_y, float *d_output)
+{
+    int idx = (blockDim.x * blockIdx.x + threadIdx.x) * 4;
     d_output[idx] = d_input_x[idx] + d_input_y[idx];
 }
 int main()
@@ -23,6 +46,26 @@ int main()
     for (int i = 0; i < 2; i++)
     {
         add1<<<dim3(N / 256), dim3(64)>>>(d_input_x, d_input_y, d_output);
+        cudaDeviceSynchronize();
+    }
+    for (int i = 0; i < 2; i++)
+    {
+        add2<<<dim3(N / 256), dim3(64)>>>(d_input_x, d_input_y, d_output);
+        cudaDeviceSynchronize();
+    }
+    for (int i = 0; i < 2; i++)
+    {
+        add3<<<dim3(N / 256), dim3(64)>>>(d_input_x, d_input_y, d_output);
+        cudaDeviceSynchronize();
+    }
+    for (int i = 0; i < 2; i++)
+    {
+        add4<<<dim3(N / 256), dim3(64)>>>(d_input_x, d_input_y, d_output);
+        cudaDeviceSynchronize();
+    }
+    for (int i = 0; i < 2; i++)
+    {
+        add5<<<dim3(N / 256), dim3(64)>>>(d_input_x, d_input_y, d_output);
         cudaDeviceSynchronize();
     }
     cudaMemcpy(output_gpu, d_output, N * sizeof(float), cudaMemcpyDeviceToHost);
