@@ -7,3 +7,15 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     target_compile_options(combine_access PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-G>)
 endif()
 target_compile_options(combine_access PRIVATE -lineinfo)
+
+
+
+# 添加CUDA
+add_executable(my_transpose_v1_naive my_transpose_v1_naive.cu)
+# 可执行文件链接
+target_link_libraries(my_transpose_v1_naive PRIVATE CUDA::cudart ${CUDA_cublas_LIBRARY})
+# 下面的debug才会用到，release用不到
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_compile_options(my_transpose_v1_naive PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-G>)
+endif()
+target_compile_options(my_transpose_v1_naive PRIVATE -lineinfo)
