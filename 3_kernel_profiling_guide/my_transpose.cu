@@ -120,6 +120,26 @@ __global__ void transpose_v4_float2_inner_1x2(float *input, float *output, const
     float *output_start = output + blockIdx.x * THREAD_SIZE_X * M + blockIdx.y * THREAD_SIZE_Y;
     FETCH_FLOAT2(output_start[threadIdx.x * M + threadIdx.y * 2]) = FETCH_FLOAT2(dst_transpose[0]);
 }
+__global__ void transpose_v5_shared_memory(float *input, float *output, const int M, const int N)
+{
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+    // float *block_start = input + blockIdx.y * blockDim.y * N + blockDim.x * blockIdx.x;
+    __shared__ float sdata[16][16];
+    if (y < M && x < N)
+    {
+        sdata[threadIdx.x][threadIdx.y] = input[y * N + x];
+    }
+    __syncthreads();
+
+    int y_out = blockIdx.x * blockDim.x + threadIdx.y;
+    int x_out = blockIdx.y * blockDim.y + threadIdx.x;
+    if (y_out < N && x_out < M)
+    {
+        output[y_out * M + x_out] = sdata[threadIdx.y][threadIdx.x];
+    }
+}
 void transpose_cpu(float *input, float *output, const int M, const int N)
 {
     for (int m = 0; m < M; m++)
@@ -134,8 +154,10 @@ void transpose_cpu(float *input, float *output, const int M, const int N)
 }
 int main()
 {
-    const int MATRIX_M = 2048;
-    const int MATRIX_N = 512;
+    // const int MATRIX_M = 2048;
+    // const int MATRIX_N = 512;
+    const int MATRIX_M = 2300;
+    const int MATRIX_N = 1500;
     const size_t size = MATRIX_M * MATRIX_N;
     float *input_host = (float *)malloc(size * sizeof(float));
     float *output_host_cpu_calc = (float *)malloc(size * sizeof(float));
@@ -149,120 +171,135 @@ int main()
     cudaMalloc(&input_device, size * sizeof(float));
     cudaMalloc(&output_device, size * sizeof(float));
     cudaMemcpy(input_device, input_host, size * sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemset(output_device, 0, size * sizeof(float));
-    for (int i = 0; i < 5; i++)
-    {
-        Perf perf("transpose32_8");
-        dim3 block_size(32, 8);
-        dim3 grid_size((MATRIX_N - 1) / 32 + 1, (MATRIX_M - 1) / 8 + 1);
-        transpose_v1_naive<<<grid_size, block_size>>>(input_device, output_device, MATRIX_M, MATRIX_N);
-        cudaDeviceSynchronize();
-    }
-    cudaMemcpy(output_host_gpu_calc, output_device, size * sizeof(float), cudaMemcpyDeviceToHost);
-    if (check(output_host_cpu_calc, output_host_gpu_calc, MATRIX_M, MATRIX_N))
-    {
-        std::cout << "right" << std::endl;
-    }
+    // cudaMemset(output_device, 0, size * sizeof(float));
+    // for (int i = 0; i < 5; i++)
+    // {
+    //     Perf perf("transpose32_8");
+    //     dim3 block_size(32, 8);
+    //     dim3 grid_size((MATRIX_N - 1) / 32 + 1, (MATRIX_M - 1) / 8 + 1);
+    //     transpose_v1_naive<<<grid_size, block_size>>>(input_device, output_device, MATRIX_M, MATRIX_N);
+    //     cudaDeviceSynchronize();
+    // }
+    // cudaMemcpy(output_host_gpu_calc, output_device, size * sizeof(float), cudaMemcpyDeviceToHost);
+    // if (check(output_host_cpu_calc, output_host_gpu_calc, MATRIX_M, MATRIX_N))
+    // {
+    //     std::cout << "right" << std::endl;
+    // }
+
+    // cudaMemset(output_device, 0, size * sizeof(float));
+    // for (int i = 0; i < 5; i++)
+    // {
+    //     Perf perf("transpose16-16");
+    //     dim3 block_size(16, 16);
+    //     dim3 grid_size((MATRIX_N - 1) / 16 + 1, (MATRIX_M - 1) / 16 + 1);
+    //     transpose_v1_naive<<<grid_size, block_size>>>(input_device, output_device, MATRIX_M, MATRIX_N);
+    //     cudaDeviceSynchronize();
+    // }
+    // cudaMemcpy(output_host_gpu_calc, output_device, size * sizeof(float), cudaMemcpyDeviceToHost);
+    // if (check(output_host_cpu_calc, output_host_gpu_calc, MATRIX_M, MATRIX_N))
+    // {
+    //     std::cout << "right" << std::endl;
+    // }
+
+    // cudaMemset(output_device, 0, size * sizeof(float));
+    // for (int i = 0; i < 5; i++)
+    // {
+    //     Perf perf("transpose8-32");
+    //     dim3 block_size(8, 32);
+    //     dim3 grid_size((MATRIX_N - 1) / 8 + 1, (MATRIX_M - 1) / 32 + 1);
+    //     transpose_v1_naive<<<grid_size, block_size>>>(input_device, output_device, MATRIX_M, MATRIX_N);
+    //     cudaDeviceSynchronize();
+    // }
+    // cudaMemcpy(output_host_gpu_calc, output_device, size * sizeof(float), cudaMemcpyDeviceToHost);
+    // if (check(output_host_cpu_calc, output_host_gpu_calc, MATRIX_M, MATRIX_N))
+    // {
+    //     std::cout << "right" << std::endl;
+    // }
+
+    // cudaMemset(output_device, 0, size * sizeof(float));
+    // for (int i = 0; i < 5; i++)
+    // {
+    //     Perf perf("transpose_v2_32_8");
+    //     dim3 block_size(32, 8);
+    //     dim3 grid_size(((MATRIX_N >> 2) - 1) / block_size.x + 1, ((MATRIX_M >> 2) - 1) / block_size.y + 1);
+    //     transpose_v2_float4_inner_4x4<<<grid_size, block_size>>>(input_device, output_device, MATRIX_M, MATRIX_N);
+    //     cudaDeviceSynchronize();
+    // }
+    // cudaMemcpy(output_host_gpu_calc, output_device, size * sizeof(float), cudaMemcpyDeviceToHost);
+    // if (check(output_host_cpu_calc, output_host_gpu_calc, MATRIX_M, MATRIX_N))
+    // {
+    //     std::cout << "right" << std::endl;
+    // }
+
+    // cudaMemset(output_device, 0, size * sizeof(float));
+    // for (int i = 0; i < 5; i++)
+    // {
+
+    //     Perf perf("transpose_v2_16_16");
+    //     dim3 block_size(16, 16);
+    //     dim3 grid_size(((MATRIX_N >> 2) - 1) / block_size.x + 1, ((MATRIX_M >> 2) - 1) / block_size.y + 1);
+    //     transpose_v2_float4_inner_4x4<<<grid_size, block_size>>>(input_device, output_device, MATRIX_M, MATRIX_N);
+    //     cudaDeviceSynchronize();
+    // }
+    // cudaMemcpy(output_host_gpu_calc, output_device, size * sizeof(float), cudaMemcpyDeviceToHost);
+    // if (check(output_host_cpu_calc, output_host_gpu_calc, MATRIX_M, MATRIX_N))
+    // {
+    //     std::cout << "right" << std::endl;
+    // }
+
+    // cudaMemset(output_device, 0, size * sizeof(float));
+    // for (int i = 0; i < 5; i++)
+    // {
+    //     Perf perf("transpose_v2_8_32");
+    //     dim3 block_size(8, 32);
+    //     dim3 grid_size(((MATRIX_N >> 2) - 1) / block_size.x + 1, ((MATRIX_M >> 2) - 1) / block_size.y + 1);
+    //     transpose_v2_float4_inner_4x4<<<grid_size, block_size>>>(input_device, output_device, MATRIX_M, MATRIX_N);
+    //     cudaDeviceSynchronize();
+    // }
+    // cudaMemcpy(output_host_gpu_calc, output_device, size * sizeof(float), cudaMemcpyDeviceToHost);
+    // if (check(output_host_cpu_calc, output_host_gpu_calc, MATRIX_M, MATRIX_N))
+    // {
+    //     std::cout << "right" << std::endl;
+    // }
+
+    // cudaMemset(output_device, 0, size * sizeof(float));
+    // for (int i = 0; i < 5; i++)
+    // {
+
+    //     Perf perf("transpose_v3_8_32");
+    //     dim3 block_size(8, 32);
+    //     dim3 grid_size(((MATRIX_N >> 1) - 1) / block_size.x + 1, ((MATRIX_M >> 1) - 1) / block_size.y + 1);
+    //     transpose_v3_float2_inner_2x2<<<grid_size, block_size>>>(input_device, output_device, MATRIX_M, MATRIX_N);
+    //     cudaDeviceSynchronize();
+    // }
+    // cudaMemcpy(output_host_gpu_calc, output_device, size * sizeof(float), cudaMemcpyDeviceToHost);
+    // if (check(output_host_cpu_calc, output_host_gpu_calc, MATRIX_M, MATRIX_N))
+    // {
+    //     std::cout << "right" << std::endl;
+    // }
+
+    // cudaMemset(output_device, 0, size * sizeof(float));
+    // for (int i = 0; i < 5; i++)
+    // {
+    //     Perf perf("transpose_v4_8_32");
+    //     dim3 block_size(8, 32);
+    //     dim3 grid_size(((MATRIX_N)-1) / block_size.x + 1, ((MATRIX_M >> 1) - 1) / block_size.y + 1);
+    //     transpose_v4_float2_inner_1x2<<<grid_size, block_size>>>(input_device, output_device, MATRIX_M, MATRIX_N);
+    //     cudaDeviceSynchronize();
+    // }
+    // cudaMemcpy(output_host_gpu_calc, output_device, size * sizeof(float), cudaMemcpyDeviceToHost);
+    // if (check(output_host_cpu_calc, output_host_gpu_calc, MATRIX_M, MATRIX_N))
+    // {
+    //     std::cout << "right" << std::endl;
+    // }
 
     cudaMemset(output_device, 0, size * sizeof(float));
     for (int i = 0; i < 5; i++)
     {
-        Perf perf("transpose16-16");
+        Perf perf("transpose_v5_16_16");
         dim3 block_size(16, 16);
-        dim3 grid_size((MATRIX_N - 1) / 16 + 1, (MATRIX_M - 1) / 16 + 1);
-        transpose_v1_naive<<<grid_size, block_size>>>(input_device, output_device, MATRIX_M, MATRIX_N);
-        cudaDeviceSynchronize();
-    }
-    cudaMemcpy(output_host_gpu_calc, output_device, size * sizeof(float), cudaMemcpyDeviceToHost);
-    if (check(output_host_cpu_calc, output_host_gpu_calc, MATRIX_M, MATRIX_N))
-    {
-        std::cout << "right" << std::endl;
-    }
-
-    cudaMemset(output_device, 0, size * sizeof(float));
-    for (int i = 0; i < 5; i++)
-    {
-        Perf perf("transpose8-32");
-        dim3 block_size(8, 32);
-        dim3 grid_size((MATRIX_N - 1) / 8 + 1, (MATRIX_M - 1) / 32 + 1);
-        transpose_v1_naive<<<grid_size, block_size>>>(input_device, output_device, MATRIX_M, MATRIX_N);
-        cudaDeviceSynchronize();
-    }
-    cudaMemcpy(output_host_gpu_calc, output_device, size * sizeof(float), cudaMemcpyDeviceToHost);
-    if (check(output_host_cpu_calc, output_host_gpu_calc, MATRIX_M, MATRIX_N))
-    {
-        std::cout << "right" << std::endl;
-    }
-
-    cudaMemset(output_device, 0, size * sizeof(float));
-    for (int i = 0; i < 5; i++)
-    {
-        Perf perf("transpose_v2_32_8");
-        dim3 block_size(32, 8);
-        dim3 grid_size(((MATRIX_N >> 2) - 1) / block_size.x + 1, ((MATRIX_M >> 2) - 1) / block_size.y + 1);
-        transpose_v2_float4_inner_4x4<<<grid_size, block_size>>>(input_device, output_device, MATRIX_M, MATRIX_N);
-        cudaDeviceSynchronize();
-    }
-    cudaMemcpy(output_host_gpu_calc, output_device, size * sizeof(float), cudaMemcpyDeviceToHost);
-    if (check(output_host_cpu_calc, output_host_gpu_calc, MATRIX_M, MATRIX_N))
-    {
-        std::cout << "right" << std::endl;
-    }
-
-    cudaMemset(output_device, 0, size * sizeof(float));
-    for (int i = 0; i < 5; i++)
-    {
-
-        Perf perf("transpose_v2_16_16");
-        dim3 block_size(16, 16);
-        dim3 grid_size(((MATRIX_N >> 2) - 1) / block_size.x + 1, ((MATRIX_M >> 2) - 1) / block_size.y + 1);
-        transpose_v2_float4_inner_4x4<<<grid_size, block_size>>>(input_device, output_device, MATRIX_M, MATRIX_N);
-        cudaDeviceSynchronize();
-    }
-    cudaMemcpy(output_host_gpu_calc, output_device, size * sizeof(float), cudaMemcpyDeviceToHost);
-    if (check(output_host_cpu_calc, output_host_gpu_calc, MATRIX_M, MATRIX_N))
-    {
-        std::cout << "right" << std::endl;
-    }
-
-    cudaMemset(output_device, 0, size * sizeof(float));
-    for (int i = 0; i < 5; i++)
-    {
-        Perf perf("transpose_v2_8_32");
-        dim3 block_size(8, 32);
-        dim3 grid_size(((MATRIX_N >> 2) - 1) / block_size.x + 1, ((MATRIX_M >> 2) - 1) / block_size.y + 1);
-        transpose_v2_float4_inner_4x4<<<grid_size, block_size>>>(input_device, output_device, MATRIX_M, MATRIX_N);
-        cudaDeviceSynchronize();
-    }
-    cudaMemcpy(output_host_gpu_calc, output_device, size * sizeof(float), cudaMemcpyDeviceToHost);
-    if (check(output_host_cpu_calc, output_host_gpu_calc, MATRIX_M, MATRIX_N))
-    {
-        std::cout << "right" << std::endl;
-    }
-
-    cudaMemset(output_device, 0, size * sizeof(float));
-    for (int i = 0; i < 5; i++)
-    {
-
-        Perf perf("transpose_v3_8_32");
-        dim3 block_size(8, 32);
-        dim3 grid_size(((MATRIX_N >> 1) - 1) / block_size.x + 1, ((MATRIX_M >> 1) - 1) / block_size.y + 1);
-        transpose_v3_float2_inner_2x2<<<grid_size, block_size>>>(input_device, output_device, MATRIX_M, MATRIX_N);
-        cudaDeviceSynchronize();
-    }
-    cudaMemcpy(output_host_gpu_calc, output_device, size * sizeof(float), cudaMemcpyDeviceToHost);
-    if (check(output_host_cpu_calc, output_host_gpu_calc, MATRIX_M, MATRIX_N))
-    {
-        std::cout << "right" << std::endl;
-    }
-
-    cudaMemset(output_device, 0, size * sizeof(float));
-    for (int i = 0; i < 5; i++)
-    {
-        Perf perf("transpose_v4_8_32");
-        dim3 block_size(8, 32);
-        dim3 grid_size(((MATRIX_N)-1) / block_size.x + 1, ((MATRIX_M >> 1) - 1) / block_size.y + 1);
-        transpose_v4_float2_inner_1x2<<<grid_size, block_size>>>(input_device, output_device, MATRIX_M, MATRIX_N);
+        dim3 grid_size(((MATRIX_N)-1) / block_size.x + 1, ((MATRIX_M)-1) / block_size.y + 1);
+        transpose_v5_shared_memory<<<grid_size, block_size>>>(input_device, output_device, MATRIX_M, MATRIX_N);
         cudaDeviceSynchronize();
     }
     cudaMemcpy(output_host_gpu_calc, output_device, size * sizeof(float), cudaMemcpyDeviceToHost);
