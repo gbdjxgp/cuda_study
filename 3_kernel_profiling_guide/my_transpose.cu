@@ -140,6 +140,26 @@ __global__ void transpose_v5_shared_memory(float *input, float *output, const in
         output[y_out * M + x_out] = sdata[threadIdx.y][threadIdx.x];
     }
 }
+__global__ void transpose_v6_no_bank_confiict(float *input, float *output, const int M, const int N)
+{
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+    // float *block_start = input + blockIdx.y * blockDim.y * N + blockDim.x * blockIdx.x;
+    __shared__ float sdata[16][17];
+    if (y < M && x < N)
+    {
+        sdata[threadIdx.x][threadIdx.y] = input[y * N + x];
+    }
+    __syncthreads();
+
+    int y_out = blockIdx.x * blockDim.x + threadIdx.y;
+    int x_out = blockIdx.y * blockDim.y + threadIdx.x;
+    if (y_out < N && x_out < M)
+    {
+        output[y_out * M + x_out] = sdata[threadIdx.y][threadIdx.x];
+    }
+}
 void transpose_cpu(float *input, float *output, const int M, const int N)
 {
     for (int m = 0; m < M; m++)
@@ -300,6 +320,21 @@ int main()
         dim3 block_size(16, 16);
         dim3 grid_size(((MATRIX_N)-1) / block_size.x + 1, ((MATRIX_M)-1) / block_size.y + 1);
         transpose_v5_shared_memory<<<grid_size, block_size>>>(input_device, output_device, MATRIX_M, MATRIX_N);
+        cudaDeviceSynchronize();
+    }
+    cudaMemcpy(output_host_gpu_calc, output_device, size * sizeof(float), cudaMemcpyDeviceToHost);
+    if (check(output_host_cpu_calc, output_host_gpu_calc, MATRIX_M, MATRIX_N))
+    {
+        std::cout << "right" << std::endl;
+    }
+
+    cudaMemset(output_device, 0, size * sizeof(float));
+    for (int i = 0; i < 5; i++)
+    {
+        Perf perf("transpose_v6_16_16");
+        dim3 block_size(16, 16);
+        dim3 grid_size(((MATRIX_N)-1) / block_size.x + 1, ((MATRIX_M)-1) / block_size.y + 1);
+        transpose_v6_no_bank_confiict<<<grid_size, block_size>>>(input_device, output_device, MATRIX_M, MATRIX_N);
         cudaDeviceSynchronize();
     }
     cudaMemcpy(output_host_gpu_calc, output_device, size * sizeof(float), cudaMemcpyDeviceToHost);
