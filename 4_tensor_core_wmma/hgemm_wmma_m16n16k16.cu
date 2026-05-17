@@ -99,7 +99,7 @@ __global__ void hgemm_wmma_m6n16k16_mma4x2_kernel(half *A, half *B, half *C, int
 #define LDST32BITS(value) (reinterpret_cast<half2 *>(&(value))[0])
 #define LDST64BITS(value) (reinterpret_cast<float2 *>(&(value))[0])
 template <const int WMMA_M = 16, const int WMMA_N = 16, const int WMMA_K = 16, const int WMMA_TILE_M = 4, const int WMMA_TILE_N = 2>
-__global__ void hgemm_wmma_m6n16k16_mma4x2_kernel_orig(half *A, half *B, half *C, int M, int N, int K)
+__global__ void hgemm_wmma_m16n16k16_mma4x2_kernel_orig(half *A, half *B, half *C, int M, int N, int K)
 {
     const int bx = blockIdx.x;
     const int by = blockIdx.y;
@@ -303,8 +303,14 @@ __global__ void hgemm_v4_wmma_m16n16k16_mma4x2_Warp2x4_dbuf_async_kernel(half *A
         int smem_offset_k = (threadIdx.x % 2) * 8;
         int smem_offset_n = threadIdx.x / 2;
         // 根据偏移写数据
-        FETCH_HALF8(shared_M[write_stage_idx][smem_offset_m][smem_offset_k]) = FETCH_HALF8(A[(block_offset_m + smem_offset_m) * K + k + smem_offset_k]);
-        FETCH_HALF8(shared_N[write_stage_idx][smem_offset_n][smem_offset_k]) = FETCH_HALF8(B[(block_offset_n + smem_offset_n) * K + k + smem_offset_k]);
+        // FETCH_HALF8(shared_M[write_stage_idx][smem_offset_m][smem_offset_k]) = FETCH_HALF8(A[(block_offset_m + smem_offset_m) * K + k + smem_offset_k]);
+        // FETCH_HALF8(shared_N[write_stage_idx][smem_offset_n][smem_offset_k]) = FETCH_HALF8(B[(block_offset_n + smem_offset_n) * K + k + smem_offset_k]);
+        // 使用async写数据
+        uint32_t load_shared_M_ptr = __cvta_generic_to_shared(&shared_M[write_stage_idx][smem_offset_m][smem_offset_k]);
+        uint32_t load_shared_N_ptr = __cvta_generic_to_shared(&shared_N[write_stage_idx][smem_offset_n][smem_offset_k]);
+        CP_ASYNC_CG(load_shared_M_ptr, &A[(block_offset_m + smem_offset_m) * K + k + smem_offset_k], 16);
+        CP_ASYNC_CG(load_shared_N_ptr, &B[(block_offset_n + smem_offset_n) * K + k + smem_offset_k], 16);
+        CP_ASYNC_COMMIT_GROUP();
         // 内部调用循环进行WMMA
         write_stage_idx ^= 1;
         for (int i = 0; i < WARP_TILE_M; i++)
@@ -324,6 +330,7 @@ __global__ void hgemm_v4_wmma_m16n16k16_mma4x2_Warp2x4_dbuf_async_kernel(half *A
                 wmma::mma_sync(C_frag[i * WARP_TILE_N + j], A_frag[i], B_frag[j], C_frag[i * WARP_TILE_N + j]);
             }
         }
+        CP_ASYNC_WAIT_GROUP(0);
         __syncthreads();
     }
     // 流水线排空
@@ -378,7 +385,7 @@ int main(int argc, char *argv[])
     // 前三个参数:mnk矩阵乘法,最后的true是做结果正确性对比
     Tester tester(512, 2048, 1024, 1, 10, 100, true);
     // tester.evaluate(hgemm_wmma_m16n16k16_naive, "hgemm_wmma_m16n16k16_naive");
-    // tester.evaluate(hgemm_wmma_m6n16k16_mma4x2, "hgemm_wmma_m6n16k16_mma4x2");
+    // tester.evaluate(hgemm_wmma_m16n16k16_mma4x2, "hgemm_wmma_m6n16k16_mma4x2");
     // tester.evaluate(hgemm_wmma_m16n16k16_mma4x2_warp2x4, "hgemm_wmma_m16n16k16_mma4x2_warp2x4");
     tester.evaluate(hgemm_v4_wmma_m16n16k16_mma4x2_Warp2x4_dbuf_async, "hgemm_v4_wmma_m16n16k16_mma4x2_Warp2x4_dbuf_async");
     return 0;

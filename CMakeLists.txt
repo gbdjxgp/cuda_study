@@ -4,6 +4,7 @@ project(cuda_learning VERSION 0.1.0 LANGUAGES CXX CUDA C)
 if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES OR CMAKE_CUDA_ARCHITECTURES STREQUAL "52")
     # Avoid nvcc's legacy sm_52 default. On newer GPUs that forces PTX JIT,
     # which can fail on machines whose driver is older than the installed toolkit.
+    # set(CMAKE_CUDA_ARCHITECTURES "80;86;89;90" CACHE STRING "CUDA architectures to build for" FORCE)
     set(CMAKE_CUDA_ARCHITECTURES "70;75;80;86;89;90" CACHE STRING "CUDA architectures to build for" FORCE)
 endif()
 
