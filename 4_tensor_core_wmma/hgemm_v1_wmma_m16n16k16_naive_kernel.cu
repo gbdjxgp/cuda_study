@@ -256,12 +256,130 @@ void hgemm_wmma_m16n16k16_mma4x2_warp2x4(half *A, half *B, half *C, int M, int N
     hgemm_wmma_m16n16k16_mma4x2_warp2x4_kernel<WMMA_M, WMMA_N, WMMA_K, WMMA_TILE_M, WMMA_TILE_N, WARP_TILE_M, WARP_TILE_N><<<grid, block>>>(A, B, C, M, N, K);
 }
 
+template <
+    const int WMMA_M = 16,
+    const int WMMA_N = 16,
+    const int WMMA_K = 16,
+    const int WMMA_TILE_M = 4,
+    const int WMMA_TILE_N = 2,
+    const int WARP_TILE_M = 2,
+    const int WARP_TILE_N = 4>
+__global__ void hgemm_v4_wmma_m16n16k16_mma4x2_Warp2x4_dbuf_async_kernel(half *A, half *B, half *C, int M, int N, int K)
+{
+    const int size_per_m = WMMA_M * WMMA_TILE_M * WARP_TILE_M;
+    const int size_per_n = WMMA_N * WMMA_TILE_N * WARP_TILE_N;
+    int block_offset_m = size_per_m * blockIdx.y;
+    int block_offset_n = size_per_n * blockIdx.x;
+    int warp_id = threadIdx.x / WARP_SIZE;
+    // int lane_id = threadIdx.x % WARP_SIZE;
+    int warp_offset_m = WMMA_M * WARP_TILE_M * (warp_id / 2);
+    int warp_offset_n = WMMA_N * WARP_TILE_N * (warp_id % 2);
+    __shared__ half shared_M[2][size_per_m][WMMA_K];
+    __shared__ half shared_N[2][size_per_n][WMMA_K];
+    wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, half> C_frag[WARP_TILE_M * WARP_TILE_N];
+    for (int i = 0; i < WARP_TILE_M * WARP_TILE_N; i++)
+    {
+        wmma::fill_fragment(C_frag[i], 0.);
+    }
+    wmma::fragment<wmma::matrix_a, WMMA_M, WMMA_N, WMMA_K, half, wmma::row_major> A_frag[WARP_TILE_M];
+    wmma::fragment<wmma::matrix_b, WMMA_M, WMMA_N, WMMA_K, half, wmma::col_major> B_frag[WARP_TILE_N];
+    // 流水线的装载！
+    // 搬运，这次一个block要搬运的数据量就是128*16以及16*128，针对AB矩阵，正好一个线程搬运一行16个数，只需要搬运一次就全部搬运完毕
+    // 首先计算偏移
+    int smem_offset_m = threadIdx.x / 2;
+    int smem_offset_k = (threadIdx.x % 2) * 8;
+    int smem_offset_n = threadIdx.x / 2;
+    // 根据偏移写数据
+    FETCH_HALF8(shared_M[0][smem_offset_m][smem_offset_k]) = FETCH_HALF8(A[(block_offset_m + smem_offset_m) * K + 0 + smem_offset_k]);
+    FETCH_HALF8(shared_N[0][smem_offset_n][smem_offset_k]) = FETCH_HALF8(B[(block_offset_n + smem_offset_n) * K + 0 + smem_offset_k]);
+    __syncthreads();
+    // 流水线装载完毕
+    int write_stage_idx = 1;
+    for (int k = WMMA_K; k < K; k += WMMA_K)
+    {
+        // 搬运，这次一个block要搬运的数据量就是128*16以及16*128，针对AB矩阵，正好一个线程搬运一行16个数，只需要搬运一次就全部搬运完毕
+        // 首先计算偏移
+        int smem_offset_m = threadIdx.x / 2;
+        int smem_offset_k = (threadIdx.x % 2) * 8;
+        int smem_offset_n = threadIdx.x / 2;
+        // 根据偏移写数据
+        FETCH_HALF8(shared_M[write_stage_idx][smem_offset_m][smem_offset_k]) = FETCH_HALF8(A[(block_offset_m + smem_offset_m) * K + k + smem_offset_k]);
+        FETCH_HALF8(shared_N[write_stage_idx][smem_offset_n][smem_offset_k]) = FETCH_HALF8(B[(block_offset_n + smem_offset_n) * K + k + smem_offset_k]);
+        // 内部调用循环进行WMMA
+        write_stage_idx ^= 1;
+        for (int i = 0; i < WARP_TILE_M; i++)
+        {
+            wmma::load_matrix_sync(A_frag[i], &(shared_M[write_stage_idx][warp_offset_m + i * WMMA_M][0]), WMMA_K);
+        }
+        for (int j = 0; j < WARP_TILE_N; j++)
+        {
+
+            wmma::load_matrix_sync(B_frag[j], &(shared_N[write_stage_idx][warp_offset_n + j * WMMA_N][0]), WMMA_K);
+        }
+        for (int i = 0; i < WARP_TILE_M; i++)
+        {
+            for (int j = 0; j < WARP_TILE_N; j++)
+            {
+
+                wmma::mma_sync(C_frag[i * WARP_TILE_N + j], A_frag[i], B_frag[j], C_frag[i * WARP_TILE_N + j]);
+            }
+        }
+        __syncthreads();
+    }
+    // 流水线排空
+    write_stage_idx ^= 1;
+
+    for (int i = 0; i < WARP_TILE_M; i++)
+    {
+        wmma::load_matrix_sync(A_frag[i], &(shared_M[write_stage_idx][warp_offset_m + i * WMMA_M][0]), WMMA_K);
+    }
+    for (int j = 0; j < WARP_TILE_N; j++)
+    {
+
+        wmma::load_matrix_sync(B_frag[j], &(shared_N[write_stage_idx][warp_offset_n + j * WMMA_N][0]), WMMA_K);
+    }
+    for (int i = 0; i < WARP_TILE_M; i++)
+    {
+        for (int j = 0; j < WARP_TILE_N; j++)
+        {
+
+            wmma::mma_sync(C_frag[i * WARP_TILE_N + j], A_frag[i], B_frag[j], C_frag[i * WARP_TILE_N + j]);
+        }
+    }
+    __syncthreads();
+    // 流水线排空完毕
+    // 循环调用保存
+    for (int i = 0; i < WARP_TILE_M; i++)
+    {
+        for (int j = 0; j < WARP_TILE_N; j++)
+        {
+            int c_offset_m = block_offset_m + warp_offset_m + i * WMMA_M;
+            int c_offset_n = block_offset_n + warp_offset_n + j * WMMA_N;
+            wmma::store_matrix_sync(C + c_offset_m * N + c_offset_n, C_frag[i * WARP_TILE_N + j], N, wmma::mem_row_major);
+        }
+    }
+}
+
+void hgemm_v4_wmma_m16n16k16_mma4x2_Warp2x4_dbuf_async(half *A, half *B, half *C, int M, int N, int K)
+{
+    const int WMMA_M = 16;
+    const int WMMA_N = 16;
+    const int WMMA_K = 16;
+    const int WMMA_TILE_M = 4;
+    const int WMMA_TILE_N = 2;
+    const int WARP_TILE_M = 2;
+    const int WARP_TILE_N = 4;
+    dim3 block(256);
+    dim3 grid(div_ceil(N, WMMA_N * WMMA_TILE_N * WARP_TILE_N), div_ceil(M, WMMA_M * WMMA_TILE_M * WARP_TILE_M));
+    hgemm_v4_wmma_m16n16k16_mma4x2_Warp2x4_dbuf_async_kernel<WMMA_M, WMMA_N, WMMA_K, WMMA_TILE_M, WMMA_TILE_N, WARP_TILE_M, WARP_TILE_N><<<grid, block>>>(A, B, C, M, N, K);
+}
 int main(int argc, char *argv[])
 {
     // 前三个参数:mnk矩阵乘法,最后的true是做结果正确性对比
     Tester tester(512, 2048, 1024, 1, 10, 100, true);
     // tester.evaluate(hgemm_wmma_m16n16k16_naive, "hgemm_wmma_m16n16k16_naive");
     // tester.evaluate(hgemm_wmma_m6n16k16_mma4x2, "hgemm_wmma_m6n16k16_mma4x2");
-    tester.evaluate(hgemm_wmma_m16n16k16_mma4x2_warp2x4, "hgemm_wmma_m16n16k16_mma4x2_warp2x4");
+    // tester.evaluate(hgemm_wmma_m16n16k16_mma4x2_warp2x4, "hgemm_wmma_m16n16k16_mma4x2_warp2x4");
+    tester.evaluate(hgemm_v4_wmma_m16n16k16_mma4x2_Warp2x4_dbuf_async, "hgemm_v4_wmma_m16n16k16_mma4x2_Warp2x4_dbuf_async");
     return 0;
 }
