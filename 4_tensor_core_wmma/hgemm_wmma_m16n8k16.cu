@@ -15,7 +15,10 @@ __global__ void shared_memory_wmma_kernel(half *A, half *B, half *C)
     ld_st_128bit(smem_b + 8 * tx, B + 8 * tx);
     __syncthreads();
     wmma::fragment<wmma::matrix_a, 16, 16, 16, half, wmma::row_major> a_frag;
-    wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::row_major> b_frag;
+    // B is stored/interpreted as col-major throughout this test path.
+    // Copying it into shared memory preserves that layout, so the WMMA
+    // fragment declaration must stay col_major here as well.
+    wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::col_major> b_frag;
     wmma::fragment<wmma::accumulator, 16, 16, 16, half> c_frag;
 
     wmma::load_matrix_sync(a_frag, smem_a, 16);
@@ -45,10 +48,17 @@ void wmma_simple(half *A, half *B, half *C, int M, int N, int K)
     dim3 grid(1);
     wmma_simple_kernel<<<grid, block>>>(A, B, C);
 }
+void shared_memory_wmma(half *A, half *B, half *C, int M, int N, int K)
+{
+    dim3 block(32);
+    dim3 grid(1);
+    shared_memory_wmma_kernel<<<grid, block>>>(A, B, C);
+}
 int main(int argc, char *argv[])
 {
     // 前三个参数:mnk矩阵乘法,最后的true是做结果正确性对比
     Tester tester(16, 16, 16, 1, 10, 100, true);
     tester.evaluate(wmma_simple, "wmma_simple");
+    tester.evaluate(shared_memory_wmma, "shared_memory_wmma");
     return 0;
 }
