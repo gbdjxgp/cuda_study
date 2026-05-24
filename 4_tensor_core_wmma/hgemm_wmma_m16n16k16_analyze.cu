@@ -9,7 +9,12 @@ void wrapper(half *A, half *B, half *C, int M, int N, int K)
     Kernel<<<grid, block>>>(A, B, C);
     HGEMM_CHECK_CUDART_ERROR(cudaGetLastError());
 }
-
+template <uint32_t S, uint32_t B, uint32_t M>
+__device__ __forceinline__ uint32_t swizzle(uint32_t addr)
+{
+    uint32_t BMask = (1 << B - 1) << M;
+    return ((addr >> S) & BMask) ^ addr;
+}
 __device__ __forceinline__ void ld_st_128bit(void *dst, void *src)
 {
     *reinterpret_cast<float4 *>(dst) = *reinterpret_cast<float4 *>(src);
@@ -133,6 +138,53 @@ __global__ void v4_shared_memory_mma(half *A, half *B, half *C)
     ld_st_128bit(C + 8 * tx, smem_c + 8 * tx);
 }
 
+__global__ void v5_shared_memory_mma_swizzle(half *A, half *B, half *C)
+{
+    __shared__ half smem_a[16 * 16];
+    __shared__ half smem_b[16 * 16];
+    __shared__ half smem_c[16 * 16];
+    int tx = threadIdx.x;
+    // 128bit相当于16字节，8个half
+    int gAddr = 8 * tx;
+    int g2sAddr = swizzle<3, 1, 3>(gAddr);
+
+    ld_st_128bit(smem_a + g2sAddr, A + gAddr);
+    ld_st_128bit(smem_b + g2sAddr, B + gAddr);
+    __syncthreads();
+    uint32_t RA[4];
+    uint32_t RB[4];
+    uint32_t RC[4] = {0x0};
+    uint32_t group_id = tx / 4;
+    uint32_t thread_id_in_group = tx % 4;
+
+    uint32_t row = tx % 16;
+    uint32_t col = tx / 16;
+    uint32_t sAddr = row * 16 + col * 8;
+    uint32_t s2fAddr = swizzle<3, 1, 3>(sAddr);
+    uint32_t addr_a = __cvta_generic_to_shared(smem_a + s2fAddr);
+    LDMATRIX_X4(RA[0], RA[1], RA[2], RA[3], addr_a);
+    uint32_t addr_b = __cvta_generic_to_shared(smem_b + s2fAddr);
+    LDMATRIX_X4(RB[0], RB[1], RB[2], RB[3], addr_b);
+
+    HMMA16816(RC[0], RC[1], RA[0], RA[1], RA[2], RA[3], RB[0], RB[2], RC[0], RC[1]);
+    HMMA16816(RC[2], RC[3], RA[0], RA[1], RA[2], RA[3], RB[1], RB[3], RC[2], RC[3]);
+    // uint32_t addr_c = __cvta_generic_to_shared(smem_c + row * 16 + col * 8);
+    // asm volatile("stmatrix.sync.aligned.x4.m8n8.shared.b16 [%0], {%1, %2, %3, %4};\n" ::"r"(addr_c), "r"(RC[0]), "r"(RC[1]), "r"(RC[2]), "r"(RC[3]));
+    // 这里thread_id_in_group * 2表示每列2个数，对应32位的寄存器。
+    // smem_c是half类型的，因此每+1相当于2字节，group_id+8则意味着C矩阵的下半部分。
+    uint32_t swizzle_c0 = swizzle<3, 1, 3>(group_id * 16 + thread_id_in_group * 2);
+    uint32_t swizzle_c1 = swizzle<3, 1, 3>((group_id + 8) * 16 + thread_id_in_group * 2);
+    uint32_t swizzle_c2 = swizzle<3, 1, 3>(group_id * 16 + thread_id_in_group * 2 + 8);
+    uint32_t swizzle_c3 = swizzle<3, 1, 3>((group_id + 8) * 16 + thread_id_in_group * 2 + 8);
+    st_ld_32bit(smem_c + swizzle_c0, RC[0]);
+    st_ld_32bit(smem_c + swizzle_c1, RC[1]);
+    st_ld_32bit(smem_c + swizzle_c2, RC[2]);
+    st_ld_32bit(smem_c + swizzle_c3, RC[3]);
+    __syncthreads();
+
+    ld_st_128bit(C + gAddr, smem_c + g2sAddr);
+}
+
 int main(int argc, char *argv[])
 {
     // 前三个参数:mnk矩阵乘法,最后的true是做结果正确性对比
@@ -141,5 +193,6 @@ int main(int argc, char *argv[])
     // tester.evaluate(wrapper<v2_shared_memory_wmma>, "v2_shared_memory_wmma");
     // tester.evaluate(wrapper<v3_shared_memory_wmma_padding>, "v3_shared_memory_wmma_padding");
     tester.evaluate(wrapper<v4_shared_memory_mma>, "v4_shared_memory_mma");
+    tester.evaluate(wrapper<v5_shared_memory_mma_swizzle>, "v5_shared_memory_mma_swizzle");
     return 0;
 }
